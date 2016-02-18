@@ -38,8 +38,9 @@ void use_image(Mat img1, Mat img2);
 
 /** Global variables */
 String car1_cascade_name = "../haar_cascades/haarcascade_car_1.xml";  // Works for front of cars
-String car2_cascade_name = "../haar_cascades/haarcascade_car_2.xml";
-String ped_cascade_name = "../haar_cascades/haarcascade_ped.xml";
+String car2_cascade_name = "../haar_cascades/cars3.xml";
+//String ped_cascade_name = "../haar_cascades/haarcascade_ped.xml";
+String ped_cascade_name = "../haar_cascades/haarcascade_pedestrian.xml";
 
 CascadeClassifier car1_cascade;
 CascadeClassifier car2_cascade;
@@ -52,8 +53,8 @@ RNG rng(12345);
 int main(int argc, const char** argv)
 {
 	// \image_data\static_images
-	//Mat imgCar = imread("../image_data/static_images/sedan1.jpg", 1);
-	Mat imgCar = imread("../image_data/static_images/traffic.jpg", 1);
+	Mat imgCar = imread("../image_data/static_images/sedan1.jpg", 1);
+	//Mat imgCar = imread("../image_data/static_images/traffic.jpg", 1);
 	//Mat imgCar = imread("../image_data/static_images/SUV_peds.jpg", 1);
 
 	Mat imgPed = imread("../image_data/static_images/0236.jpg", 1);
@@ -64,7 +65,7 @@ int main(int argc, const char** argv)
 
 	capture_video();
 	//use_image(imgCar); // Use an image instead of a video
-	//use_image(imgCar, imgPed);
+	//use_image(imgCar, imgCar);
 
 	waitKey(0);
 	return 0;
@@ -96,7 +97,7 @@ void capture_video()
 {
 	//========
 	//CvCapture* capture;
-	VideoCapture capture("../video/atrium_video.avi");
+	VideoCapture capture("../video/peds1.mp4");
 	Mat frame;
 
 	//-- 2. Read the video stream
@@ -106,12 +107,12 @@ void capture_video()
 
 	while (true)
 	{
-		capture >> frame;
+		capture >> frame;  // Take the current frame and put it into the Mat object
 
 		//-- 3. Apply the classifier to the frame
 		if (!frame.empty())
 		{
-			detectAndDisplayCars(frame);
+			//detectAndDisplayCars(frame);
 			detectAndDisplayPeds(frame);
 		}
 		else {
@@ -119,7 +120,7 @@ void capture_video()
 			break;
 		}
 
-		int c = waitKey(10);
+		int c = waitKey(2);
 
 		if ((char)c == 'c')
 		{
@@ -156,10 +157,11 @@ void detectAndDisplayCars(Mat frame)
 	equalizeHist(frame_gray, frame_gray);
 
 	//  Detect cars Front
-	car1_cascade.detectMultiScale(frame_gray, cars1, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
-	car2_cascade.detectMultiScale(frame_gray, cars2, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
+	car1_cascade.detectMultiScale(frame_gray, cars1, 1.2, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
+	car2_cascade.detectMultiScale(frame_gray, cars2, 1.2, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
 
 
+	// Go through all of the detected cars
 	for (size_t i = 0; i < cars1.size(); i++)
 	{
 		Point topLeft(cars1[i].x, cars1[i].y);
@@ -167,6 +169,7 @@ void detectAndDisplayCars(Mat frame)
 		rectangle(frame, topLeft, bottomRight, Scalar(50, 255, 50), 2, 8, 0);
 	}
 
+	// Go through all of the detected cars with h
 	for (size_t i = 0; i < cars2.size(); i++)
 	{
 		Point topLeft(cars2[i].x, cars2[i].y);
@@ -174,8 +177,7 @@ void detectAndDisplayCars(Mat frame)
 		rectangle(frame, topLeft, bottomRight, Scalar(255, 255, 50), 2, 8, 0);
 	}
 
-	//-- Show what you got
-	imshow(window_name, frame);
+	imshow(window_name, frame); // Output image to display
 }
 
 // Detect and Display Pedestrians
@@ -187,17 +189,15 @@ void detectAndDisplayPeds(Mat frame)
 	cvtColor(frame, frame_gray, CV_BGR2GRAY);
 	equalizeHist(frame_gray, frame_gray);
 
-	ped_cascade.detectMultiScale(frame_gray, peds, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
+	ped_cascade.detectMultiScale(frame_gray, peds, 1.2, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
 
 	for (size_t i = 0; i < peds.size(); i++)
 	{
-		Point center(peds[i].x + peds[i].width*0.5, peds[i].y + peds[i].height*0.5);
 		Point topLeft(peds[i].x, peds[i].y);
 		Point bottomRight(peds[i].x + peds[i].width, peds[i].y + peds[i].height);
 
 		rectangle(frame, topLeft, bottomRight, Scalar(0, 0, 255), 2, 8, 0);
-		//ellipse(frame, center, Size(peds[i].width*0.5, peds[i].height*0.5), 0, 0, 360, Scalar(255, 255, 255), 4, 8, 0);
 	}
-	//-- Show what you got
-	imshow(window_name_peds, frame);
+	
+	imshow(window_name_peds, frame); // Output the image to display
 }
