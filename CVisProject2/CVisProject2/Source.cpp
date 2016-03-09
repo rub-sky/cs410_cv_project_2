@@ -17,29 +17,50 @@ c. In-class presentation (0-10 points)
 d. Project report (0-20 points)
 */
 
+// -c -v ../video/video1.avi
+
 #include "opencv2/core/core.hpp"
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2\objdetect\objdetect.hpp"
 #include "opencv2\imgproc\imgproc.hpp"
 #include "opencv2/opencv.hpp"
 #include <opencv2/tracking.hpp>
-
 #include <iostream>
 #include <stdio.h>
 
 using namespace cv;
 using namespace std;
 
+const string OUTPUT_FILENAME = "result.avi";
+const string OUTPUT_IMG_FILENAME = "result.png";
+vector<int> compression_params; // Image output params
+int nextId = 0;
+
 const int MAX_VIS = 20;
 const int MAX_AGE= 6;
 const int MIN_VIS = 8;
 const double MAX_VIS_TO_AGE_RATIO = 0.6;
+// Algorithm constants
 const string TRK_ALG_KCF = "KCF";
 const string TRK_ALG_MF = "MEDIANFLOW";
 const string TRK_ALG_TLD = "TLD";
 
+const int BLUR_SZ = 2;
+// Haar Cascade Car Constants
+const int CAR_SZ = 25;
+const double CAR_SCALE_FACTOR = 1.15;
+const int CAR_MIN_NEIGH = 1;
+const int CAR_FLAGS = 0;
+const cv::Size CAR_H_SIZE = cv::Size(10, CAR_SZ);
+// Pedestrian Haar Constants
+const int PED_SZ = 80;
+const double PED_SCALE_FACTOR = 1.75;
+const int PED_MIN_NEIGH = 3;
+const int PED_FLAGS = 0; 
+const cv::Size PED_H_SIZE = cv::Size(10, PED_SZ);
+
 struct trackedObj {
-	int id = 0;
+	int id;
 	KeyPoint centroid;
 	Rect2d bnd_box;
 	int age = 1;
@@ -50,7 +71,8 @@ struct trackedObj {
 	// Default constructor
 	trackedObj(int idNum, KeyPoint cent, Rect2d bBox, int ageNum, int tvc, int cic, string alg)
 	{
-		id = idNum;
+		id = nextId;
+
 		centroid = cent;
 		bnd_box = bBox;
 		age = ageNum;
@@ -63,7 +85,8 @@ struct trackedObj {
 	// Secondary constructor
 	trackedObj(int idNum, KeyPoint cent, Rect2d bBox, string alg)
 	{
-		id = idNum;
+		id = nextId;
+		
 		centroid = cent;
 		bnd_box = bBox;
 
@@ -89,44 +112,48 @@ struct trackedObj {
 		++totVisCount;
 		++age;
 	}
+
+	// For updating the bounding box
+	void updateTracker(Mat frame) {
+		trkr->update(frame, bnd_box);  // update the tracker for the bounding box
+		Point2f pt(bnd_box.x-(bnd_box.width/2), bnd_box.y - (bnd_box.height / 2));
+		centroid = KeyPoint(pt, bnd_box.width / 2, -1,0,0,-1);
+	}
 };
 
 /** Function Headers */
-void load_cascades();
-void detectAndDisplay(Mat frame);
-void detectAndDisplayPeds(Mat frame);
-void capture_video();
-void use_image(Mat img1, Mat img2);
-// For Tracked objecs
-vector<Rect2d> compareDetectedToTracked(vector<Rect> objs);
+int load_cascades();
+Mat detectAndDisplay(Mat frame);
+int use_video(char* filename);
+int use_image(char* filename);
+vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame);  // For Tracking
 KeyPoint rectToKeyPoint(Rect r);
 Rect2d rectToRect2d(Rect r);
 void deleteLostTracks();
-void set_params();
-
 
 /** Global variables */
-String car1_cascade_name = "../haar_cascades/haarcascade_car_1.xml";  // Works for front of cars
-String car2_cascade_name = "../haar_cascades/cars3.xml";
-//String car2_cascade_name = "../haar_cascades/haarcascade_ped.xml";
-String ped_cascade_name = "../haar_cascades/haarcascade_pedestrian.xml";
-//String car2_cascade_name = "../haar_cascades/haarcascade_fullbody.xml";
-String videoName = "../video/video2.avi";  //"../video/mitsubishi_768x576.avi";//"../video/CarTraffic1.mp4";
+String car1_cascade_name = "../haar_cascades/haarcascade_car_1.xml";
+String car2_cascade_name = "../haar_cascades/haarcascade_car_2.xml";
+String car3_cascade_name = "../haar_cascades/cars3.xml";
+String ped1_cascade_name = "../haar_cascades/haarcascade_pedestrian.xml";
+String ped2_cascade_name = "../haar_cascades/haarcascade_ped.xml";
+String ped3_cascade_name = "../haar_cascades/haarcascade_fullbody.xml";
 
 CascadeClassifier car1_cascade;
 CascadeClassifier car2_cascade;
-CascadeClassifier ped_cascade;
-string window_name = "Car detection";
-string window_name_peds = "Pedestrian detection";
+CascadeClassifier car3_cascade;
+CascadeClassifier ped1_cascade;
+CascadeClassifier ped2_cascade;
+CascadeClassifier ped3_cascade;
+string window_name = "Detection and Tracking";
+bool is_car = true;
 RNG rng(12345);
 int frame_cnt = 0;
 
 /* For tracker*/
 std::string trackingAlg = "MEDIANFLOW"; // KCF, MEDIANFLOW or TLD
-MultiTracker trackers(trackingAlg);
-vector<Rect2d> objects;
 vector<trackedObj> trackers_objs;
-int nextId = 0;
+
 
 // Blob Detector
 // Setup SimpleBlobDetector parameters.
@@ -137,211 +164,208 @@ SimpleBlobDetector blobDetect;
 /** @function main */
 int main(int argc, const char** argv)
 {
-	// \image_data\static_images
-	Mat imgCar = imread("../image_data/static_images/sedan1.jpg", 1);
-	//Mat imgCar = imread("../image_data/static_images/traffic.jpg", 1);
-	//Mat imgCar = imread("../image_data/static_images/SUV_peds.jpg", 1);
+	// Check args
+	if (argc < 3) {
+		cout <<	" Usage: <car or pedestrian> <image or video> <file_name>\n"
+			 << "        <-c or -p>          <-i or -v>       <file_name>\n"
+			 << " examples:\n"
+			 << " example -c -i ./img/cars.jpg\n"
+			 << " example -p -v ./ped.avi\n" << endl;
+		cv::waitKey(20);
+		return 0;
+	}
 
-	Mat imgPed = imread("../image_data/static_images/0236.jpg", 1);
+	char* filename = new char[strlen(argv[3])];  // Filename arg
+	char* media = new char[strlen(argv[2])];
+	char* obj = new char[strlen(argv[1])];
 
-	if (!imgCar.data || !imgPed.data) { printf("Error loading src1 \n"); return -1; }
+	strcpy(filename, argv[3]); // Copy argv into filename
+	strcpy(media, argv[2]); // Copy argv into filename
+	strcpy(obj, argv[1]); // Copy argv into filename
 
-	load_cascades();
-	set_params();
+	if (load_cascades() == -1) return 0;  // Load the cascades
 
-	capture_video();
-	//use_image(imgCar); // Use an image instead of a video
-	//use_image(imgCar, imgCar);
+	// Check the object type arg
+	if (!strcmp(obj, "-p"))
+		is_car = false;
+	else if (!strcmp(obj, "-c"))
+		is_car = true;
+	else {
+		printf("ERROR - Invalid object argument"); return 0;
+	}
 
-	waitKey(0);
+	// Choose image or video process
+	if (!strcmp(media,"-v")) {
+		if (use_video(filename) == -1) return 0;
+	} else if (!strcmp(media, "-i")) {
+		if (use_image(filename) == -1) return 0;
+		else waitKey(0);
+	}
+	else {
+		printf("ERROR - Invalid media argument"); return 0;
+	}
+
+	waitKey(10);
+
 	return 0;
 }
 
-void load_cascades()
+int load_cascades()
 {
 	//-- 1. Load the cascades
-	if (!car1_cascade.load(car1_cascade_name))
-	{
-		printf("--(!)Error loading  Car 1 Cascade!\n");
-		return;
-	}
-
-	if (!car2_cascade.load(car2_cascade_name))
-	{
-		printf("--(!)Error loading Car 2 Cascade!\n");
-		return;
-	}
-
-	if (!ped_cascade.load(ped_cascade_name))
-	{
-		printf("--(!)Error loading Pedestrian Cascade!!\n");
-		return;
-	}
+	if (!car1_cascade.load(car1_cascade_name)) { printf("--(!)Error loading Car 1 Cascade!\n"); return -1;	}
+	if (!car2_cascade.load(car2_cascade_name)) { printf("--(!)Error loading Car 2 Cascade!\n");	return -1;	}
+	if (!car2_cascade.load(car3_cascade_name)) { printf("--(!)Error loading Car 3 Cascade!\n");	return -1; }
+	if (!ped1_cascade.load(ped1_cascade_name)) { printf("--(!)Error loading Pedestrian 1 Cascade!!\n"); return -1; }
+	if (!ped2_cascade.load(ped1_cascade_name)) { printf("--(!)Error loading Pedestrian 2 Cascade!!\n"); return -1; }
+	if (!ped3_cascade.load(ped1_cascade_name)) { printf("--(!)Error loading Pedestrian 3 Cascade!!\n"); return -1; }
+	return 0;
 }
 
-void set_params()
+// Use a video file to detect and display
+int use_video(char* filename)
 {
-	// Change thresholds
-	params.minThreshold = 10;
-	params.maxThreshold = 200;
-
-	// Filter by Area.
-	params.filterByArea = true;
-	params.minArea = 1500;
-
-	// Filter by Circularity
-	params.filterByCircularity = true;
-	params.minCircularity = 0.1;
-
-	// Filter by Convexity
-	params.filterByConvexity = true;
-	params.minConvexity = 0.87;
-
-	// Filter by Inertia
-	params.filterByInertia = true;
-	params.minInertiaRatio = 0.01;
-}
-
-void capture_video()
-{
-	//========
-	//CvCapture* capture;
-	VideoCapture capture(videoName);
+	VideoCapture capture(filename);
 	Mat frame;
 	bool paused = false;
-
 	VideoWriter outputVideo;  // Open the output
+
 	Size S = Size((int)capture.get(CV_CAP_PROP_FRAME_WIDTH),    // Acquire input size
 		(int)capture.get(CV_CAP_PROP_FRAME_HEIGHT));
 	int ex = static_cast<int>(capture.get(CV_CAP_PROP_FOURCC));     // Get Codec Type- Int form
 
-	outputVideo.open("./result.avi", CV_FOURCC('P', 'I', 'M', '1'), capture.get(CV_CAP_PROP_FPS), S, true);
+	outputVideo.open(OUTPUT_FILENAME, CV_FOURCC('P', 'I', 'M', '1'), capture.get(CV_CAP_PROP_FPS), S, true);
 
-	if (!outputVideo.isOpened()) {
-		cout << "Could not open the output video for write: " << videoName << endl;
-	}
+	if (!outputVideo.isOpened())
+		cout << "Could not open output video for write: " << OUTPUT_FILENAME << endl;
 
-	//-- 2. Read the video stream
-	//capture.open(0);
-	if (!capture.isOpened())  // check if we succeeded
-		return;
+	// Try to read the video file
+	if (!capture.isOpened()) { cout << "Could not open file " << filename << endl; return -1; }
 
-	while (true)
-	{
+	while (true) {
 		if (!paused) {
 			capture >> frame;  // Take the current frame and put it into the Mat object
 			++frame_cnt;
 			//cout << "Frame: " << frame_cnt << endl;
 
-			//-- 3. Apply the classifier to the frame
 			if (!frame.empty()) {
-				detectAndDisplay(frame);
-				//detectAndDisplayPeds(frame);
+				frame = detectAndDisplay(frame);  // Do some detection and tracking
+				imshow(window_name, frame); // Output image to display
 			}
 			else {
-				printf(" --(!) No captured frame -- Break!");
+				printf("===== No captured frame -- Break! =====\n");
 				break;
 			}
 
 			outputVideo << frame;  // output the frame to the output file
 		}
-		int c = waitKey(10);
+		int c = waitKey(20);
 
 		if ((char)c == 'c')	break;
 		if ((char)c == 'p') paused = true;
 	}
+
 	outputVideo.release(); // Release the output
+
+	return 0;
 }
 
-void use_image(Mat img1, Mat img2)
+// Uses an image to detect an object
+int use_image(char* filename)
 {
-	// Read the video stream
-	// Apply the classifier to the frame
-	if (!img1.empty() && !img2.empty())
-	{
-		detectAndDisplay(img1);
-		detectAndDisplayPeds(img2);
+	Mat img = imread(filename, 1);
+	if (!img.data) { printf("ERROR - Could not load image \n");	return -1; }
+
+	// Read the image
+	if (!img.empty()) {
+		img = detectAndDisplay(img);  // Do some detecting
+		imshow(window_name, img); // Output image to display
 	}
 	else {
-		printf(" --(!) No captured frame -- Break!");
+		printf(" --(!) No Image frame -- Break!");
+		return -1;
 	}
 
+	//bool imwrite(const String& filename, InputArray img, const vector<int>& params=vector<int>() )
+	compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+	compression_params.push_back(9);
+
+	imwrite(OUTPUT_IMG_FILENAME, img, compression_params);
+
+	return 0;
 }
 
 // Detect and Display Cars
-void detectAndDisplay(Mat frame)
+Mat detectAndDisplay(Mat frame)
 {
 	vector<Rect2d> newObjs;
 	std::vector<Rect> someObjs;
 	Mat frame_gray;
 
-	cvtColor(frame, frame_gray, CV_BGR2GRAY);
-	equalizeHist(frame_gray, frame_gray);
+	try {
 
-	car2_cascade.detectMultiScale(frame_gray, someObjs, 1.25, 3, 0 | CV_HAAR_SCALE_IMAGE, Size(20, 20));
+		cvtColor(frame, frame_gray, CV_BGR2GRAY);
+		equalizeHist(frame_gray, frame_gray);
+		blur(frame_gray, frame_gray, Size(BLUR_SZ, BLUR_SZ), Point(-1, -1));  // Smoothing
+		imshow("equalized", frame_gray);
 
-	// ======== start tracking
-	deleteLostTracks();
-	newObjs = compareDetectedToTracked(someObjs);
+		if (is_car) {
+			car1_cascade.detectMultiScale(frame_gray, someObjs, CAR_SCALE_FACTOR, CAR_MIN_NEIGH, CV_HAAR_SCALE_IMAGE, CAR_H_SIZE);
+			car2_cascade.detectMultiScale(frame_gray, someObjs, CAR_SCALE_FACTOR, CAR_MIN_NEIGH, CV_HAAR_SCALE_IMAGE, CAR_H_SIZE);
+			//car3_cascade.detectMultiScale(frame_gray, someObjs, CAR_SCALE_FACTOR, CAR_MIN_NEIGH, CV_HAAR_SCALE_IMAGE, CAR_H_SIZE);
+		}
+		else {
+			ped1_cascade.detectMultiScale(frame_gray, someObjs, PED_SCALE_FACTOR, PED_MIN_NEIGH, CV_HAAR_SCALE_IMAGE, PED_H_SIZE);
+			ped2_cascade.detectMultiScale(frame_gray, someObjs, PED_SCALE_FACTOR, PED_MIN_NEIGH, CV_HAAR_SCALE_IMAGE, PED_H_SIZE);
+			ped3_cascade.detectMultiScale(frame_gray, someObjs, PED_SCALE_FACTOR, PED_MIN_NEIGH, CV_HAAR_SCALE_IMAGE, PED_H_SIZE);
+		}
 
-	//update the tracking result
-	if (newObjs.size() > 0) {
-		trackers.add(frame, newObjs);
+		// Check to see if tracked objects list is populated
+		if (trackers_objs.size() > 0)
+			deleteLostTracks();
+
+		newObjs = compareDetectedToTracked(someObjs, frame);  // Compare the newly detected objects to the existing ones
+
+		if (trackers_objs.size() > 0) {  // draw the tracked objects
+			for (unsigned i = 0; i < trackers_objs.size(); i++) {
+				Point pt = Point(trackers_objs[i].bnd_box.x, trackers_objs[i].bnd_box.y);
+				Size sz(trackers_objs[i].bnd_box.width/2, trackers_objs[i].bnd_box.height/2);
+				Point center = Point(trackers_objs[i].centroid.pt.x, trackers_objs[i].centroid.pt.y);
+				string text = "id: " + std::to_string(trackers_objs[i].id);
+				
+				trackers_objs[i].updateTracker(frame);  // update the tracker for the bounding box
+				rectangle(frame, trackers_objs[i].bnd_box, Scalar(255, 0, 0), 2, 1);
+				//ellipse(frame, center, sz, 90, 0, 360, Scalar(255, 0, 255), 1,8,0);
+				cv::putText(frame, text, pt, CV_FONT_NORMAL, 0.5f, Scalar::all(255), 1, 8);
+			}
+		}
+
+		// Go through all of the detected cars with h
+		/*for (size_t i = 0; i < someObjs.size(); i++)
+		{
+			Point topLeft(someObjs[i].x, someObjs[i].y);
+			Point bottomRight(someObjs[i].x + someObjs[i].width, someObjs[i].y + someObjs[i].height);
+			rectangle(frame, topLeft, bottomRight, Scalar(255, 255, 50), 2, 8, 0);
+		}*/
+
+		return frame;
 	}
-
-	trackers.update(frame);
-
-	// draw the tracked object
-	for (unsigned i = 0; i < trackers.objects.size(); i++) {
-		rectangle(frame, trackers.objects[i], Scalar(255, 0, 0), 2, 1);
-		Point pt(trackers.objects[i].x, trackers.objects[i].y);
-		string text = "id: " + std::to_string(i);
-		cv::putText(frame, text, pt, CV_FONT_NORMAL, 0.5f, Scalar::all(255), 1, 8);
+	catch (int e) {
+		cout << "Exception: " << e << endl << endl;
+		return frame;
 	}
-	// ======== end tracking
-
-	// Go through all of the detected cars with h
-	/*for (size_t i = 0; i < cars2.size(); i++)
-	{
-		Point topLeft(cars2[i].x, cars2[i].y);
-		Point bottomRight(cars2[i].x + cars2[i].width, cars2[i].y + cars2[i].height);
-		rectangle(frame, topLeft, bottomRight, Scalar(255, 255, 50), 2, 8, 0);
-	}*/
-
-	imshow(window_name, frame); // Output image to display
 }
 
-// Detect and Display Pedestrians
-void detectAndDisplayPeds(Mat frame)
-{
-	std::vector<Rect> peds;
-	Mat frame_gray;
-
-	cvtColor(frame, frame_gray, CV_BGR2GRAY);
-	equalizeHist(frame_gray, frame_gray);
-
-	ped_cascade.detectMultiScale(frame_gray, peds, 1.2, 2, 0 | CV_HAAR_SCALE_IMAGE, Size(30, 30));
-
-	for (size_t i = 0; i < peds.size(); i++)
-	{
-		Point topLeft(peds[i].x, peds[i].y);
-		Point bottomRight(peds[i].x + peds[i].width, peds[i].y + peds[i].height);
-
-		rectangle(frame, topLeft, bottomRight, Scalar(0, 0, 255), 2, 8, 0);
-	}
-	
-	imshow(window_name_peds, frame); // Output the image to display
-}
 
 // Compare the detected objects to the tracked objects
 // Takes in a vector of Rects that are the newly detected objects
 // Returns nothing, but function updates the tracked objects
-vector<Rect2d> compareDetectedToTracked(vector<Rect> objs)
+vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame)
 {
 	vector<Rect2d> newObjs;
 	vector<KeyPoint> objs_kPts;
 	vector<float> indexOfOverlapObjValues(objs.size(), 0);  // The overlap value of each obj
-	int trk_cnt = trackers.objects.size();
+	int trk_cnt = trackers_objs.size();
 	int det_cnt = objs.size();  // Detection size
 
 	// Get the key points for all of the detected objects
@@ -368,11 +392,10 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs)
 
 		// Check the highest value and then update the tracked objects
 		if (high_Indx > 0) {
-			trackers_objs[i].centroid = objs_kPts[high_Indx]; // Update the struct tracker obj
+			//trackers_objs[i].centroid = objs_kPts[high_Indx]; // Update the struct tracker obj
 			trackers_objs[i].updateBBox();  // Update the bounding box for the tracked object
+			trackers_objs[i].updateTracker(frame);
 			trackers_objs[i].currentlyVisible(); // Update the age and visibility counters
-
-			trackers.objects[i] = rectToRect2d(objs[high_Indx]);  // update the tracker object
 		}
 		else {
 			trackers_objs[i].currentlyNotVisible();
@@ -382,13 +405,10 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs)
 	// Add new objects to be tracked
 	for (int k = 0; k < objs.size(); ++k) {
 		if (indexOfOverlapObjValues[k] == 0) {
-			// Add a new tracker object
-			Rect2d r2d = rectToRect2d(objs[k]);
-
-			trackedObj trkO(nextId, objs_kPts[k], r2d, TRK_ALG_MF);
+			Rect2d r2d = rectToRect2d(objs[k]);  // Add a new tracker object
+			trackedObj trk(nextId, objs_kPts[k], r2d, TRK_ALG_MF);
 			++nextId;  // Increment id count;
-
-			trackers_objs.push_back(trkO);
+			trackers_objs.push_back(trk);
 			newObjs.push_back(r2d);
 		}
 	}
@@ -399,14 +419,8 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs)
 // Delete tracked objects that are not to be tracked any more
 void deleteLostTracks()
 {
-	if (trackers.objects.empty())
-	{
-		trackers_objs.clear();
-		return;
-	}
-
 	vector<int> lostInds;
-	int track_cnt = trackers.objects.size();
+	int track_cnt = trackers_objs.size();
 
 	// Compute the fraction of the track's age for which it was visible.
 	for (int i = 0; i < track_cnt; ++i) {
@@ -415,17 +429,17 @@ void deleteLostTracks()
 		int totVisCnt = trackers_objs[i].totVisCount;
 		float val = (float)totVisCnt / (float)ageVal;
 
-		cout << "Car id[" << trackers_objs[i].id << "]  Age:[" << ageVal << "]  Invisible:[" << lostVal << "]  Total Vis:[" << totVisCnt << "] Ratio:[" << to_string(val) << " / " << to_string(MAX_VIS_TO_AGE_RATIO) << "]\n";
+		//cout << "Car id[" << trackers_objs[i].id << "]  Age:[" << ageVal << "]  Invisible:[" << lostVal << "]  Total Vis:[" << totVisCnt << "] Ratio:[" << to_string(val) << " / " << to_string(MAX_VIS_TO_AGE_RATIO) << "]\n";
 
-		//if ((ageVal < MAX_AGE && val < MAX_VIS_TO_AGE_RATIO) || (lostVal >= MAX_VIS))
-			//lostInds.push_back(i); // Add to list of cars to remove
+		if ((ageVal < MAX_AGE && val < MAX_VIS_TO_AGE_RATIO) || (lostVal >= MAX_VIS))
+			lostInds.push_back(i); // Add to list of cars to remove
 	}
 
 	// Remove the selected cars
 	for (int i = 0; i < lostInds.size(); ++i) {
-		cout << "Erasing Index: " << i << " --> Car Id: " << trackers_objs[i].id << endl;
-		trackers_objs.erase(trackers_objs.begin() + lostInds[i]);  // Corresponding struct.
-		trackers.objects.erase(trackers.objects.begin() + lostInds[i]); // Delete tracked objects
+		//cout << "Erasing Index: " << i << " --> Car Id: " << trackers_objs[i].id << endl;
+		if (lostInds[i] < trackers_objs.size())
+			trackers_objs.erase(trackers_objs.begin() + lostInds[i]);  // Corresponding struct.
 	}
 
 	cout << endl;
