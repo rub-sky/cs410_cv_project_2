@@ -40,6 +40,7 @@ const int MAX_VIS = 20;
 const int MAX_AGE= 6;
 const int MIN_VIS = 8;
 const double MAX_VIS_TO_AGE_RATIO = 0.6;
+const float OVERLAP_THRESH = .35;
 // Algorithm constants
 const string TRK_ALG_KCF = "KCF";
 const string TRK_ALG_MF = "MEDIANFLOW";
@@ -47,17 +48,20 @@ const string TRK_ALG_TLD = "TLD";
 
 const int BLUR_SZ = 2;
 // Haar Cascade Car Constants
-const int CAR_SZ = 25;
-const double CAR_SCALE_FACTOR = 1.15;
+const int CAR_SZ = 35;
+const double CAR_SCALE_FACTOR = 1.5;
 const int CAR_MIN_NEIGH = 1;
 const int CAR_FLAGS = 0;
-const cv::Size CAR_H_SIZE = cv::Size(10, CAR_SZ);
+const cv::Size CAR_H_SIZE = cv::Size(20, CAR_SZ);
 // Pedestrian Haar Constants
 const int PED_SZ = 80;
 const double PED_SCALE_FACTOR = 1.75;
 const int PED_MIN_NEIGH = 3;
 const int PED_FLAGS = 0; 
 const cv::Size PED_H_SIZE = cv::Size(10, PED_SZ);
+// Params for TrackerMIL
+TrackerMIL::Params tmfParams;
+
 
 struct trackedObj {
 	int id;
@@ -67,6 +71,7 @@ struct trackedObj {
 	int totVisCount = 1;
 	int consecInvCount = 0;
 	Ptr<Tracker> trkr;
+	Ptr<TrackerMIL> trMedFlow;
 
 	// Default constructor
 	trackedObj(int idNum, KeyPoint cent, Rect2d bBox, int ageNum, int tvc, int cic, string alg)
@@ -80,6 +85,8 @@ struct trackedObj {
 		consecInvCount = cic;
 
 		trkr = Tracker::create(alg); // Initializes the tracking algorithm for the object
+		//tmfParams.pointsInGrid = 150;
+		trMedFlow = TrackerMIL::createTracker(tmfParams);
 	}
 
 	// Secondary constructor
@@ -91,6 +98,13 @@ struct trackedObj {
 		bnd_box = bBox;
 
 		trkr = Tracker::create(alg);  // Initializes the tracking algorithm for the object
+
+		trMedFlow = TrackerMIL::createTracker(tmfParams);
+	}
+
+	void initTracker(Mat frame) {
+		//trMedFlow->init(frame, bnd_box);
+		trkr->init(frame, bnd_box);
 	}
 
 	// Updates the bounding box with the existing centroid
@@ -115,9 +129,16 @@ struct trackedObj {
 
 	// For updating the bounding box
 	void updateTracker(Mat frame) {
-		trkr->update(frame, bnd_box);  // update the tracker for the bounding box
-		Point2f pt(bnd_box.x-(bnd_box.width/2), bnd_box.y - (bnd_box.height / 2));
+		// TrackerMedian Flow
+		//trMedFlow->update(frame, bnd_box);
+		trkr->update(frame, bnd_box);
+
+		//trkr->update(frame, bnd_box);  // update the tracker for the bounding box
+		//Point2f pt(bnd_box.x-(bnd_box.width/2), bnd_box.y - (bnd_box.height / 2));
+		Point2f pt(bnd_box.x + (bnd_box.width/2), bnd_box.y + (bnd_box.height / 2));
 		centroid = KeyPoint(pt, bnd_box.width / 2, -1,0,0,-1);
+
+		
 	}
 };
 
@@ -130,6 +151,7 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame);  // For T
 KeyPoint rectToKeyPoint(Rect r);
 Rect2d rectToRect2d(Rect r);
 void deleteLostTracks();
+float rectOverLap(Rect r1, Rect r2);
 
 /** Global variables */
 String car1_cascade_name = "../haar_cascades/haarcascade_car_1.xml";
@@ -152,7 +174,7 @@ int frame_cnt = 0;
 
 /* For tracker*/
 std::string trackingAlg = "MEDIANFLOW"; // KCF, MEDIANFLOW or TLD
-vector<trackedObj> trackers_objs;
+vector<trackedObj> tracked_objs;
 
 
 // Blob Detector
@@ -300,6 +322,7 @@ Mat detectAndDisplay(Mat frame)
 {
 	vector<Rect2d> newObjs;
 	std::vector<Rect> someObjs;
+	vector<KeyPoint> keypts;
 	Mat frame_gray;
 
 	try {
@@ -321,24 +344,26 @@ Mat detectAndDisplay(Mat frame)
 		}
 
 		// Check to see if tracked objects list is populated
-		if (trackers_objs.size() > 0)
+		if (tracked_objs.size() > 0)
 			deleteLostTracks();
 
 		newObjs = compareDetectedToTracked(someObjs, frame);  // Compare the newly detected objects to the existing ones
 
-		if (trackers_objs.size() > 0) {  // draw the tracked objects
-			for (unsigned i = 0; i < trackers_objs.size(); i++) {
-				Point pt = Point(trackers_objs[i].bnd_box.x, trackers_objs[i].bnd_box.y);
-				Size sz(trackers_objs[i].bnd_box.width/2, trackers_objs[i].bnd_box.height/2);
-				Point center = Point(trackers_objs[i].centroid.pt.x, trackers_objs[i].centroid.pt.y);
-				string text = "id: " + std::to_string(trackers_objs[i].id);
-				
-				trackers_objs[i].updateTracker(frame);  // update the tracker for the bounding box
-				rectangle(frame, trackers_objs[i].bnd_box, Scalar(255, 0, 0), 2, 1);
+		if (tracked_objs.size() > 0) {  // draw the tracked objects
+			for (unsigned i = 0; i < tracked_objs.size(); i++) {
+				Point pt = Point(tracked_objs[i].bnd_box.x, tracked_objs[i].bnd_box.y);
+				Size sz(tracked_objs[i].bnd_box.width/2, tracked_objs[i].bnd_box.height/2);
+				Point center = Point(tracked_objs[i].centroid.pt.x, tracked_objs[i].centroid.pt.y);
+				string text = "id: " + std::to_string(tracked_objs[i].id);
+				keypts.push_back(tracked_objs[i].centroid);
+
+				rectangle(frame, tracked_objs[i].bnd_box, Scalar(255, 0, 0), 2, 1);
 				//ellipse(frame, center, sz, 90, 0, 360, Scalar(255, 0, 255), 1,8,0);
 				cv::putText(frame, text, pt, CV_FONT_NORMAL, 0.5f, Scalar::all(255), 1, 8);
 			}
 		}
+
+		drawKeypoints(frame, keypts, frame);
 
 		// Go through all of the detected cars with h
 		/*for (size_t i = 0; i < someObjs.size(); i++)
@@ -364,8 +389,9 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame)
 {
 	vector<Rect2d> newObjs;
 	vector<KeyPoint> objs_kPts;
+	vector<int> high_val_indexes;
 	vector<float> indexOfOverlapObjValues(objs.size(), 0);  // The overlap value of each obj
-	int trk_cnt = trackers_objs.size();
+	int trk_cnt = tracked_objs.size();
 	int det_cnt = objs.size();  // Detection size
 
 	// Get the key points for all of the detected objects
@@ -379,7 +405,7 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame)
 		int high_Indx = -1; // Highest index
 
 		for (int j = 0; j < det_cnt; ++j) {
-			float val = KeyPoint::overlap(trackers_objs[i].centroid, objs_kPts[j]); // Get 0 if they dont overlap
+			float val = rectOverLap(tracked_objs[i].bnd_box, objs[j]);  // Get rectangle overlap
 
 			if (highestVal < val) {  // Check if the current value is higher
 				highestVal = val;
@@ -390,25 +416,27 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame)
 				indexOfOverlapObjValues[j] = val;
 		}
 
+		high_val_indexes.push_back(high_Indx);
+
 		// Check the highest value and then update the tracked objects
 		if (high_Indx > 0) {
-			//trackers_objs[i].centroid = objs_kPts[high_Indx]; // Update the struct tracker obj
-			trackers_objs[i].updateBBox();  // Update the bounding box for the tracked object
-			trackers_objs[i].updateTracker(frame);
-			trackers_objs[i].currentlyVisible(); // Update the age and visibility counters
+			tracked_objs[i].updateTracker(frame);
+			tracked_objs[i].currentlyVisible(); // Update the age and visibility counters
 		}
 		else {
-			trackers_objs[i].currentlyNotVisible();
+			tracked_objs[i].currentlyNotVisible();
 		}
 	}
 
 	// Add new objects to be tracked
 	for (int k = 0; k < objs.size(); ++k) {
-		if (indexOfOverlapObjValues[k] == 0) {
+		if (indexOfOverlapObjValues[k] < OVERLAP_THRESH) {
 			Rect2d r2d = rectToRect2d(objs[k]);  // Add a new tracker object
 			trackedObj trk(nextId, objs_kPts[k], r2d, TRK_ALG_MF);
+			trk.initTracker(frame);
+
 			++nextId;  // Increment id count;
-			trackers_objs.push_back(trk);
+			tracked_objs.push_back(trk);
 			newObjs.push_back(r2d);
 		}
 	}
@@ -420,16 +448,16 @@ vector<Rect2d> compareDetectedToTracked(vector<Rect> objs, Mat frame)
 void deleteLostTracks()
 {
 	vector<int> lostInds;
-	int track_cnt = trackers_objs.size();
+	int track_cnt = tracked_objs.size();
 
 	// Compute the fraction of the track's age for which it was visible.
 	for (int i = 0; i < track_cnt; ++i) {
-		int ageVal = trackers_objs[i].age;
-		int lostVal = trackers_objs[i].consecInvCount;
-		int totVisCnt = trackers_objs[i].totVisCount;
+		int ageVal = tracked_objs[i].age;
+		int lostVal = tracked_objs[i].consecInvCount;
+		int totVisCnt = tracked_objs[i].totVisCount;
 		float val = (float)totVisCnt / (float)ageVal;
 
-		//cout << "Car id[" << trackers_objs[i].id << "]  Age:[" << ageVal << "]  Invisible:[" << lostVal << "]  Total Vis:[" << totVisCnt << "] Ratio:[" << to_string(val) << " / " << to_string(MAX_VIS_TO_AGE_RATIO) << "]\n";
+		//cout << "Car id[" << tracked_objs[i].id << "]  Age:[" << ageVal << "]  Invisible:[" << lostVal << "]  Total Vis:[" << totVisCnt << "] Ratio:[" << to_string(val) << " / " << to_string(MAX_VIS_TO_AGE_RATIO) << "]\n";
 
 		if ((ageVal < MAX_AGE && val < MAX_VIS_TO_AGE_RATIO) || (lostVal >= MAX_VIS))
 			lostInds.push_back(i); // Add to list of cars to remove
@@ -437,9 +465,9 @@ void deleteLostTracks()
 
 	// Remove the selected cars
 	for (int i = 0; i < lostInds.size(); ++i) {
-		//cout << "Erasing Index: " << i << " --> Car Id: " << trackers_objs[i].id << endl;
-		if (lostInds[i] < trackers_objs.size())
-			trackers_objs.erase(trackers_objs.begin() + lostInds[i]);  // Corresponding struct.
+		//cout << "Erasing Index: " << i << " --> Car Id: " << tracked_objs[i].id << endl;
+		if (lostInds[i] < tracked_objs.size())
+			tracked_objs.erase(tracked_objs.begin() + lostInds[i]);  // Corresponding struct.
 	}
 
 	cout << endl;
@@ -448,12 +476,25 @@ void deleteLostTracks()
 // Convert point to Keypoint
 KeyPoint rectToKeyPoint(Rect r)
 {
-	Point2f pt(r.x+(r.width),r.y+(r.height));
-	return KeyPoint(pt, (r.width / 2), 0, 0, 0, 0);
+	Point2f pt(r.x+(r.width/2),r.y+(r.height/2));
+	return KeyPoint(pt, (r.width / 2), -1, 0, 0, -1);
 }
 
 // Convert Rect to Rect2d
 Rect2d rectToRect2d(Rect r)
 {
 	return Rect2d(r.x, r.y, r.width, r.height);;
+}
+
+// Calculated the overlap of two rectangles
+// Returns the percent value of overlap
+float rectOverLap(Rect r1, Rect r2)
+{
+	Rect r3 = r1 & r2; // Get the intersection
+	float r3Area = (float)r3.area();
+
+	float val1 = float(r3Area / r1.area());
+	float val2 = float(r3Area / r2.area());
+
+	return ((val1 + val2) / 2);
 }
